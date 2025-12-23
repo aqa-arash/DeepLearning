@@ -1,0 +1,63 @@
+import numpy as np
+
+class Sgd:
+    def __init__ (self, learningrate): 
+        self.learningrate = learningrate
+    
+    def calculate_update(self, weight_tensor, gradient_tensor) :
+        updated_weight = weight_tensor - self.learningrate * gradient_tensor
+        return updated_weight
+    
+
+class SgdWithMomentum:
+    def __init__ (self, learning_rate, momentum_rate = 0.9) : 
+        self.learning_rate = learning_rate
+        self.momentum_rate = momentum_rate
+        self._velocity = None 
+    
+    def calculate_update(self, weight_tensor, gradient_tensor) :
+        if self._velocity is None : 
+            self._velocity = np.zeros_like(weight_tensor)
+        
+        # Update velocity
+        self._velocity = self.momentum_rate * self._velocity - self.learning_rate * gradient_tensor
+        
+        # Update weights
+        weight_tensor += self._velocity
+        
+        return weight_tensor
+    
+class Adam:
+    def __init__ (self, learningrate, mu = 0.9, rho = 0.999) : 
+
+        self.learningrate = learningrate
+        self.mu = mu
+        self.rho = rho
+        self.epsilon =  1e-8
+        self._m = None 
+        self._v = None 
+        self._t = 0 
+    
+    def calculate_update(self, weight_tensor, gradient_tensor) :
+        if self._m is None : 
+            self._m = np.zeros_like(weight_tensor)
+            self._v = np.zeros_like(weight_tensor)
+        
+        self._t += 1
+        
+        # Update biased first moment estimate
+        self._m = self.mu * self._m + (1 - self.mu) * gradient_tensor
+        
+        # Update biased second raw moment estimate
+        self._v = self.rho * self._v + (1 - self.rho) * (gradient_tensor ** 2)
+        
+        # Compute bias-corrected first moment estimate
+        m_hat = self._m / (1 - self.mu ** self._t)
+        
+        # Compute bias-corrected second raw moment estimate
+        v_hat = self._v / (1 - self.rho ** self._t)
+        
+        # Update weights
+        weight_tensor -= self.learningrate * m_hat / (np.sqrt(v_hat) + self.epsilon)
+        
+        return weight_tensor
