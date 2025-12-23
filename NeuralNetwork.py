@@ -25,9 +25,11 @@ class NeuralNetwork:
         self.loss_layer = None   # Special layer providing loss and prediction
         self.weight_initializer = weight_initializer
         self.bias_initializer = bias_initializer
+        self.loss_regularizer = 0.0  # Regularization loss
         
         # Helper variable to store labels between forward and backward pass
         self._current_labels = None
+        self._phase = 'train'  # 'train' or 'test'
 
     def forward(self):
         """
@@ -36,6 +38,7 @@ class NeuralNetwork:
         Uses input from the data_layer, passes it through all layers,
         and returns the output of the final layer (the loss layer).
         """
+        self.loss_regularizer = 0.0
         # Get input and labels from the data layer
         input_tensor, label_tensor = self.data_layer.next()
         
@@ -46,10 +49,12 @@ class NeuralNetwork:
         activation = input_tensor
         for layer in self.layers:
             activation = layer.forward(activation)
+            if hasattr(layer,'regularizer') and layer.regularizer is not None and hasattr(layer, 'weights'):
+                self.loss_regularizer += layer.regularizer.norm(layer.weights)
             
         # Return the output of the last layer (loss)
         loss = self.loss_layer.forward(activation,self._current_labels)
-        return loss
+        return loss + self.loss_regularizer
 
     def backward(self):
         """
@@ -126,3 +131,29 @@ class NeuralNetwork:
             
         # Return the output of the final layer before the loss
         return activation
+    
+    @property
+    def phase (self):
+        """
+        Gets the current phase of the network (training or testing).
+        
+        Returns:
+            str: 'train' if in training mode, 'test' if in testing mode.
+        """
+        return self._phase
+    
+    @phase.setter
+    def phase(self, phase):
+        """
+        Sets the current phase of the network.
+        
+        Args:
+            phase (str): 'train' to set training mode, 'test' for testing mode.
+        """
+        if phase not in ['train', 'test']:
+            raise ValueError("Phase must be either 'train' or 'test'.")
+        self._phase = phase
+        for layer in self.layers:
+            if hasattr(layer, 'phase'):
+                layer.phase = phase
+    
