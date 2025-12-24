@@ -49,8 +49,9 @@ class NeuralNetwork:
         activation = input_tensor
         for layer in self.layers:
             activation = layer.forward(activation)
-            if hasattr(layer,'regularizer') and layer.regularizer is not None and hasattr(layer, 'weights'):
-                self.loss_regularizer += layer.regularizer.norm(layer.weights)
+            if hasattr(layer,'optimizer') and hasattr(layer.optimizer,'regularizer')\
+                  and layer.optimizer.regularizer is not None and  hasattr(layer, 'weights'):
+                self.loss_regularizer += layer.optimizer.regularizer.norm(layer.weights)
             
         # Return the output of the last layer (loss)
         loss = self.loss_layer.forward(activation,self._current_labels)
@@ -102,6 +103,7 @@ class NeuralNetwork:
         Args:
             iterations (int): The number of iterations to train.
         """
+        self.phase= 'train'
         for _ in range(iterations):
             # 1. Perform forward pass which already computes and stores loss in the loss layer
             loss_value = self.forward()
@@ -123,6 +125,7 @@ class NeuralNetwork:
         Returns:
             The network's prediction (output of the second-to-last layer).
         """
+        self.phase='test'
         activation = input_tensor
         
         # Propagate through all layers (the loss layer is not part of self.layers)
@@ -154,6 +157,9 @@ class NeuralNetwork:
             raise ValueError("Phase must be either 'train' or 'test'.")
         self._phase = phase
         for layer in self.layers:
-            if hasattr(layer, 'phase'):
-                layer.phase = phase
+            if hasattr(layer, 'testing_phase'):
+                if phase == 'train':
+                    layer.testing_phase = False
+                else:
+                    layer.testing_phase = True
     

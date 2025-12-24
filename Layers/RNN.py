@@ -1,11 +1,10 @@
 import numpy as np
-import Base
+from . import Base
+from .FullyConnected import FullyConnected
+from .TanH import TanH
+from .Sigmoid import Sigmoid
 
 class RNN(Base.BaseLayer):
-    """
-    Recurrent Neural Network Layer
-    """
-
     def __init__(self, input_size, hidden_size, output_size, optimizer=None):
         super().__init__()
         self.trainable = True
@@ -13,118 +12,190 @@ class RNN(Base.BaseLayer):
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.optimizer = optimizer
-
-        self.weights_ih = None  # Weights for input to hidden
-        self.weights_hh = None  # Weights for hidden to hidden
-        self.bias_h = None      # Bias for hidden layer
-        self.last_hidden_state = np.zeros((1, hidden_size))
-        self.cache = None
         self._memorize = False
-        self._regularizer = None
-        self._weights_initializer = None
-        self._bias_initializer = None
 
-    def initialize(self, weights_initializer=None, bias_initializer=None):
-        # Use custom initializers if provided, else default
-        if weights_initializer is not None:
-            self._weights_initializer = weights_initializer
-        if bias_initializer is not None:
-            self._bias_initializer = bias_initializer
-        if self._weights_initializer is not None:
-            self.weights_ih = self._weights_initializer.initialize((self.input_size, self.hidden_size), self.input_size, self.hidden_size)
-            self.weights_hh = self._weights_initializer.initialize((self.hidden_size, self.hidden_size), self.hidden_size, self.hidden_size)
-        else:
-            limit_ih = np.sqrt(1 / self.input_size)
-            limit_hh = np.sqrt(1 / self.hidden_size)
-            self.weights_ih = np.random.uniform(-limit_ih, limit_ih, (self.input_size, self.hidden_size))
-            self.weights_hh = np.random.uniform(-limit_hh, limit_hh, (self.hidden_size, self.hidden_size))
-        if self._bias_initializer is not None:
-            self.bias_h = self._bias_initializer.initialize(self.hidden_size, 1, self.hidden_size)
-        else:
-            self.bias_h = np.zeros(self.hidden_size)
+        # --- Sub-Layers ---
+        # 1. Hidden Layer: Takes [Input, Hidden_Prev] -> New Hidden
+        # Input dimension is input_size + hidden_size
+        self.fc_hidden = FullyConnected(input_size + hidden_size, hidden_size)
+        self.tanh = TanH()
+
+        # 2. Output Layer: Takes [Hidden] -> Output
+        self.fc_output = FullyConnected(hidden_size, output_size)
+        self.sigmoid = Sigmoid()
+
+        self.last_hidden_state = None
+        self.gradient_weights_n = None # internal storage for the property
+
+    def initialize(self, weights_initializer, bias_initializer):
+        self.fc_hidden.initialize(weights_initializer, bias_initializer)
+        self.fc_output.initialize(weights_initializer, bias_initializer)
 
     def forward(self, input_tensor):
+        # Handle "Batch as Time" (single sequence)
+        if input_tensor.ndim == 2:
+            input_tensor = input_tensor[np.newaxis, :, :] # (1, Time, Features)
+
         batch_size, seq_length, _ = input_tensor.shape
-        # If memorize is True, use last hidden state, else zeros
-        if self._memorize and self.last_hidden_state.shape[0] == batch_size:
-            h_t = self.last_hidden_state.copy()
+        self.batch_size = batch_size # Store for backward
+
+        # Initialize hidden state
+        if self._memorize and self.last_hidden_state is not None and self.last_hidden_state.shape[0] == batch_size:
+            h_t = self.last_hidden_state
         else:
             h_t = np.zeros((batch_size, self.hidden_size))
-        self.cache = []
+
+        output_tensor = np.zeros((batch_size, seq_length, self.output_size))
+        
+        # Cache for BPTT
+        self.cache = {
+            'fc_hidden_inputs': [], # Stores input_tensor (with bias) for each step
+            'fc_output_inputs': [], # Stores input_tensor (with bias) for each step
+            'h_states': [],         # Stores hidden state before activation
+            'y_outputs': [],        # Stores output y (for sigmoid derivative)
+            'h_activations': [h_t]  # Stores h_t (after activation)
+        }
 
         for t in range(seq_length):
             x_t = input_tensor[:, t, :]
-            h_t = np.tanh(np.dot(x_t, self.weights_ih) + np.dot(h_t, self.weights_hh) + self.bias_h)
-            self.cache.append((x_t, h_t))
+            
+            # --- 1. Hidden Step ---
+            # Concatenate x_t and h_{t-1}
+            x_con = np.concatenate([x_t, h_t], axis=1)
+            
+            # Pass through FC Hidden
+            # Note: FC layer adds the bias column internally. We must capture that state.
+            self.fc_hidden.forward(x_con)
+            # Store the internal extended input (with bias) used by FC layer
+            self.cache['fc_hidden_inputs'].append(self.fc_hidden.input_tensor)
+            
+            # Pass through TanH
+            # We get the pre-activation from FC logic, but FC.forward returns result of dot product
+            # So we just pass the result to TanH
+            h_out = np.dot(self.fc_hidden.input_tensor, self.fc_hidden.weights) # Re-calculate or assume FC returns it
+            # Actually, just use the return value of forward:
+            h_out = self.fc_hidden.forward(x_con) # This runs the dot product again, which is fine, or just rely on prev line
+            
+            h_t = self.tanh.forward(h_out)
+            self.cache['h_states'].append(h_t) # Store for debugging/logic
+            self.cache['h_activations'].append(h_t)
 
-        self.last_hidden_state = h_t.copy()  # Save for next sequence if memorize
-        return h_t
+            # --- 2. Output Step ---
+            # Pass through FC Output
+            y_out_pre = self.fc_output.forward(h_t)
+            # Store the internal extended input (with bias) used by FC layer
+            self.cache['fc_output_inputs'].append(self.fc_output.input_tensor)
+
+            # Pass through Sigmoid
+            y_t = self.sigmoid.forward(y_out_pre)
+            self.cache['y_outputs'].append(y_t)
+            
+            output_tensor[:, t, :] = y_t
+
+        self.last_hidden_state = h_t.copy()
+        
+        # Return flattened if input was originally 2D
+        if input_tensor.shape[0] == 1:
+            return output_tensor[0, :, :]
+        return output_tensor
 
     def backward(self, error_tensor):
+        if error_tensor.ndim == 2:
+             error_tensor = error_tensor[np.newaxis, :, :]
+
         batch_size, seq_length, _ = error_tensor.shape
-        dW_ih = np.zeros_like(self.weights_ih)
-        dW_hh = np.zeros_like(self.weights_hh)
-        db_h = np.zeros_like(self.bias_h)
+        
+        # Accumulators for weights (initialized to zero)
+        grad_weights_hidden_acc = np.zeros_like(self.fc_hidden.weights)
+        grad_weights_output_acc = np.zeros_like(self.fc_output.weights)
+        
         dh_next = np.zeros((batch_size, self.hidden_size))
+        grad_input = np.zeros((batch_size, seq_length, self.input_size))
+
+        # Important: Disable optimizer in sub-layers for the loop
+        # We perform the update MANUALLY after accumulation
+        fc_hidden_opt = self.fc_hidden.optimizer
+        fc_output_opt = self.fc_output.optimizer
+        self.fc_hidden.optimizer = None
+        self.fc_output.optimizer = None
 
         for t in reversed(range(seq_length)):
-            x_t, h_t = self.cache[t]
-            dh = error_tensor[:, t, :] + dh_next
-            dtanh = (1 - h_t ** 2) * dh
+            dy = error_tensor[:, t, :]
+            
+            # --- Output Layer Gradients ---
+            # 1. Sigmoid Derivative
+            # Restore sigmoid state (activations) to calculate derivative
+            self.sigmoid.activations = self.cache['y_outputs'][t]
+            dy_sigmoid = self.sigmoid.backward(dy)
+            
+            # 2. FC Output Layer
+            # Restore input tensor state
+            self.fc_output.input_tensor = self.cache['fc_output_inputs'][t]
+            # Backward propagates error to h_t
+            dh_from_output = self.fc_output.backward(dy_sigmoid)
+            
+            # Accumulate Output Weights Gradient
+            grad_weights_output_acc += self.fc_output.gradient_weights
 
-            dW_ih += np.dot(x_t.T, dtanh)
-            # For dW_hh, use previous hidden state (h_{t-1})
-            h_prev = self.cache[t-1][1] if t > 0 else np.zeros_like(h_t)
-            dW_hh += np.dot(h_prev.T, dtanh)
-            db_h += np.sum(dtanh, axis=0)
-            dh_next = np.dot(dtanh, self.weights_hh.T)
+            # --- Hidden Layer Gradients ---
+            # Combine gradients flowing to h_t: from output + from next time step
+            dh_total = dh_from_output + dh_next
+            
+            # 1. TanH Derivative
+            # Restore tanh state (activations)
+            self.tanh.activations = self.cache['h_activations'][t+1] # index t+1 corresponds to h_t
+            dtanh = self.tanh.backward(dh_total)
+            
+            # 2. FC Hidden Layer
+            # Restore input tensor state
+            self.fc_hidden.input_tensor = self.cache['fc_hidden_inputs'][t]
+            # Backward propagates error to [x_t, h_{t-1}]
+            d_concat = self.fc_hidden.backward(dtanh)
+            
+            # Accumulate Hidden Weights Gradient
+            grad_weights_hidden_acc += self.fc_hidden.gradient_weights
+            
+            # Split Gradient: [Input (x_t) | Previous Hidden (h_{t-1})]
+            grad_input[:, t, :] = d_concat[:, :self.input_size]
+            dh_next = d_concat[:, self.input_size:]
+
+        # Restore optimizers
+        self.fc_hidden.optimizer = fc_hidden_opt
+        self.fc_output.optimizer = fc_output_opt
+        
+        # Save accumulated gradients to properties
+        self.gradient_weights_n = grad_weights_hidden_acc
+        # We don't expose output grads via property, but we use them for update below
+
+        # --- Optimizer Update ---
         if self.optimizer:
-            self.weights_ih = self.optimizer.update(self.weights_ih, dW_ih)
-            self.weights_hh = self.optimizer.update(self.weights_hh, dW_hh)
-            self.bias_h = self.optimizer.update(self.bias_h, db_h)
-        # Return error tensor for previous layer (input)
-        return dh_next
-    
+            self.fc_hidden.weights = self.optimizer.calculate_update(self.fc_hidden.weights, grad_weights_hidden_acc)
+            self.fc_output.weights = self.optimizer.calculate_update(self.fc_output.weights, grad_weights_output_acc)
+
+        if grad_input.shape[0] == 1:
+            return grad_input[0, :, :]
+        return grad_input
+
+    @property
+    def weights(self):
+        return self.fc_hidden.weights
+
+    @weights.setter
+    def weights(self, value):
+        self.fc_hidden.weights = value
+
     @property
     def gradient_weights(self):
-        # Stack weights for access: [weights_ih, weights_hh]
-        return np.concatenate([
-            self.weights_ih.flatten(),
-            self.weights_hh.flatten()
-        ])
-
+        return self.gradient_weights_n
+    
     @gradient_weights.setter
     def gradient_weights(self, value):
-        # Split and reshape value into weights_ih and weights_hh
-        ih_size = self.input_size * self.hidden_size
-        hh_size = self.hidden_size * self.hidden_size
-        self.weights_ih = value[:ih_size].reshape(self.input_size, self.hidden_size)
-        self.weights_hh = value[ih_size:ih_size+hh_size].reshape(self.hidden_size, self.hidden_size)
-    @property
-    def optimizer(self):
-        return self._optimizer
+        self.gradient_weights_n = value
 
-    @optimizer.setter
-    def optimizer(self, value):
-        self._optimizer = value
-    def calculate_regularization_loss(self):
-        loss = 0
-        if self._regularizer is not None:
-            loss += self._regularizer.loss(self.weights_ih)
-            loss += self._regularizer.loss(self.weights_hh)
-        return loss
-
-    @property
-    def regularizer(self):
-        return self._regularizer
-
-    @regularizer.setter
-    def regularizer(self, value):
-        self._regularizer = value
-    
     @property
     def memorize(self):
         return self._memorize
+    
     @memorize.setter
     def memorize(self, value):
         self._memorize = value

@@ -8,8 +8,8 @@ class L1_Regularizer:
         return self.alpha * np.sum(np.abs(weights))
     
     def norm(self, weights):
-        # L1 norm of weights
-        return np.linalg.norm(weights, ord=1)
+        # L1 norm of weights multiplied by regularizer strength
+        return self.alpha * np.sum(np.abs(weights))
 
     def calculate_gradient(self, weights):
         return self.alpha * np.sign(weights)
@@ -25,8 +25,8 @@ class L2_Regularizer:
         return 0.5 * self.alpha * np.sum(weights ** 2)
     
     def norm(self, weights):
-        # L2 norm of weights
-        return np.linalg.norm(weights)
+        # L2 norm squared (sum of squared elements) times regularizer strength
+        return self.alpha * np.sum(weights ** 2)
 
     def calculate_gradient(self, weights):
         return self.alpha * weights

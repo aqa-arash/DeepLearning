@@ -1,5 +1,5 @@
 import numpy as np
-import Base
+from . import Base
 
 class Dropout(Base.BaseLayer):
     """
@@ -23,6 +23,7 @@ class Dropout(Base.BaseLayer):
         self.probability = probability
         self.mask = None
 
+
     def forward(self, input_tensor):
         """
         Forward pass for the Dropout layer.
@@ -32,7 +33,7 @@ class Dropout(Base.BaseLayer):
         Returns:
             np.ndarray: The output after applying dropout.
             """
-        if self._phase == 'train':
+        if self.testing_phase == False: 
             # Create a mask with the same shape as input_tensor
             self.mask = (np.random.rand(*input_tensor.shape) < self.probability).astype(input_tensor.dtype)
             # Scale the output to maintain the expected value
@@ -51,7 +52,7 @@ class Dropout(Base.BaseLayer):
         Returns:
             np.ndarray: The gradient of the loss with respect to the input of this layer.
         """
-        if self._phase == 'train':
+        if self.testing_phase == False:
             # Apply the mask to the output gradient and scale it    
             input_gradient = error_tensor * self.mask /self.probability
         else:   

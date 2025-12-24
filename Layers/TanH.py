@@ -1,5 +1,5 @@
 import numpy as np
-import Base
+from . import Base
 
 class TanH(Base.BaseLayer):
     """
